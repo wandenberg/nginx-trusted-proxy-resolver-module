@@ -5,14 +5,20 @@
 
 
 ngx_int_t    ngx_http_google_proxy_resolver_pre_config(ngx_conf_t *cf);
+ngx_int_t    ngx_http_google_proxy_resolver_post_config(ngx_conf_t *cf);
+void        *ngx_http_google_proxy_resolver_create_loc_conf(ngx_conf_t *cf);
+char        *ngx_http_google_proxy_resolver_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child);
 ngx_int_t    ngx_http_google_proxy_resolver_init_worker(ngx_cycle_t *cycle);
 ngx_int_t    ngx_http_google_proxy_resolver_realip_variable(ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data);
+ngx_int_t    ngx_http_google_proxy_resolver_handler(ngx_http_request_t *r);
 ngx_flag_t   ngx_http_google_proxy_resolver_is_accessing_through_google_proxy(ngx_http_request_t *r);
 ngx_str_t   *ngx_http_google_proxy_resolver_create_str(ngx_pool_t *pool, uint len);
 ngx_str_t   *ngx_http_google_proxy_resolver_get_header(ngx_http_request_t *r, const ngx_str_t *header_name);
 ngx_str_t   *ngx_http_google_proxy_resolver_get_hostname(struct sockaddr *addr, ngx_pool_t *pool);
 ngx_str_t   *ngx_http_google_proxy_resolver_get_host_ip(ngx_str_t *hostname, struct sockaddr *addr, ngx_pool_t *pool);
 void         ngx_http_google_proxy_resolver_get_last_x_forwarded_for_valid_ip(ngx_http_request_t *r, ngx_str_t *ip);
+ngx_int_t    ngx_http_google_proxy_resolver_set_addr(ngx_http_request_t *r, ngx_addr_t *addr);
+void         ngx_http_google_proxy_resolver_cleanup(void *data);
 
 
 const ngx_str_t  HEADER_VIA = ngx_string("Via");
@@ -20,6 +26,17 @@ const ngx_str_t  GOOGLE_COMPRESSION_PROXY = ngx_string("Chrome Compression Proxy
 const ngx_str_t  GOOGLE_PROXY_DOMAIN_PATTERN = ngx_string("^google-proxy-[0-9\\-]*\\.google\\.com$");
 
 ngx_regex_t *google_proxy_domain_regexp = NULL;
+
+typedef struct {
+    ngx_flag_t                enabled;
+} ngx_http_google_proxy_resolver_loc_conf_t;
+
+typedef struct {
+    ngx_connection_t  *connection;
+    struct sockaddr   *sockaddr;
+    socklen_t          socklen;
+    ngx_str_t          addr_text;
+} ngx_http_google_proxy_resolver_ctx_t;
 
 static ngx_http_variable_t  ngx_http_google_proxy_resolver_vars[] = {
     { ngx_string("google_proxy_resolver_realip"),
@@ -32,22 +49,29 @@ static ngx_http_variable_t  ngx_http_google_proxy_resolver_vars[] = {
 
 
 static ngx_command_t ngx_http_google_proxy_resolver_commands[] = {
+    { ngx_string("google_proxy_resolver_to_real_ip"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_TAKE1|NGX_CONF_FLAG,
+      ngx_conf_set_flag_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_google_proxy_resolver_loc_conf_t, enabled),
+      NULL },
+
     ngx_null_command
 };
 
 
 static ngx_http_module_t ngx_http_google_proxy_resolver_module_ctx = {
-    ngx_http_google_proxy_resolver_pre_config, /* preconfiguration */
-    NULL,                                      /* postconfiguration */
+    ngx_http_google_proxy_resolver_pre_config,         /* preconfiguration */
+    ngx_http_google_proxy_resolver_post_config,        /* postconfiguration */
 
-    NULL,                                      /* create main configuration */
-    NULL,                                      /* init main configuration */
+    NULL,                                              /* create main configuration */
+    NULL,                                              /* init main configuration */
 
-    NULL,                                      /* create server configuration */
-    NULL,                                      /* merge server configuration */
+    NULL,                                              /* create server configuration */
+    NULL,                                              /* merge server configuration */
 
-    NULL,                                      /* create location configuration */
-    NULL                                       /* merge location configuration */
+    ngx_http_google_proxy_resolver_create_loc_conf,    /* create location configuration */
+    ngx_http_google_proxy_resolver_merge_loc_conf      /* merge location configuration */
 };
 
 
@@ -83,6 +107,60 @@ ngx_http_google_proxy_resolver_pre_config(ngx_conf_t *cf)
     }
 
     return NGX_OK;
+}
+
+
+ngx_int_t
+ngx_http_google_proxy_resolver_post_config(ngx_conf_t *cf)
+{
+    ngx_http_handler_pt        *h;
+    ngx_http_core_main_conf_t  *cmcf;
+
+    cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
+
+    h = ngx_array_push(&cmcf->phases[NGX_HTTP_POST_READ_PHASE].handlers);
+    if (h == NULL) {
+        return NGX_ERROR;
+    }
+
+    *h = ngx_http_google_proxy_resolver_handler;
+
+    h = ngx_array_push(&cmcf->phases[NGX_HTTP_REWRITE_PHASE].handlers);
+    if (h == NULL) {
+        return NGX_ERROR;
+    }
+
+    *h = ngx_http_google_proxy_resolver_handler;
+
+    return NGX_OK;
+}
+
+
+void *
+ngx_http_google_proxy_resolver_create_loc_conf(ngx_conf_t *cf)
+{
+    ngx_http_google_proxy_resolver_loc_conf_t  *conf;
+
+    conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_google_proxy_resolver_loc_conf_t));
+    if (conf == NULL) {
+        return NULL;
+    }
+
+    conf->enabled = NGX_CONF_UNSET;
+
+    return conf;
+}
+
+
+char *
+ngx_http_google_proxy_resolver_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
+{
+    ngx_http_google_proxy_resolver_loc_conf_t  *prev = parent;
+    ngx_http_google_proxy_resolver_loc_conf_t  *conf = child;
+
+    ngx_conf_merge_value(conf->enabled, prev->enabled, 0);
+
+    return NGX_CONF_OK;
 }
 
 
@@ -141,6 +219,39 @@ ngx_http_google_proxy_resolver_realip_variable(ngx_http_request_t *r, ngx_http_v
     }
 
     return NGX_OK;
+}
+
+
+ngx_int_t
+ngx_http_google_proxy_resolver_handler(ngx_http_request_t *r)
+{
+    ngx_http_google_proxy_resolver_loc_conf_t  *gprlc = ngx_http_get_module_loc_conf(r, ngx_http_google_proxy_resolver_module);
+    ngx_http_google_proxy_resolver_ctx_t       *ctx = ngx_http_get_module_ctx(r, ngx_http_google_proxy_resolver_module);
+    ngx_str_t                                   ip = ngx_null_string;
+    ngx_addr_t                                  addr;
+
+    if ((!gprlc->enabled) || (ctx != NULL)) {
+        return NGX_DECLINED;
+    }
+
+#if nginx_version < 1003014
+    if ((r->headers_in.x_forwarded_for != NULL) && ngx_http_google_proxy_resolver_is_accessing_through_google_proxy(r)) {
+#else
+    if ((r->headers_in.x_forwarded_for.elts != NULL) && ngx_http_google_proxy_resolver_is_accessing_through_google_proxy(r)) {
+#endif
+
+        ngx_http_google_proxy_resolver_get_last_x_forwarded_for_valid_ip(r, &ip);
+
+        if (ip.len > 0) {
+            addr.sockaddr = r->connection->sockaddr;
+            addr.socklen = r->connection->socklen;
+            if (ngx_parse_addr(r->pool, &addr, ip.data, ip.len) == NGX_OK) {
+                return ngx_http_google_proxy_resolver_set_addr(r, &addr);
+            }
+        }
+    }
+
+    return NGX_DECLINED;
 }
 
 
@@ -284,4 +395,72 @@ ngx_http_google_proxy_resolver_get_last_x_forwarded_for_valid_ip(ngx_http_reques
 
     ip->len = xfflen - (p - xff);
     ip->data = p;
+}
+
+
+ngx_int_t
+ngx_http_google_proxy_resolver_set_addr(ngx_http_request_t *r, ngx_addr_t *addr)
+{
+    size_t                  len;
+    u_char                 *p;
+    u_char                  text[NGX_SOCKADDR_STRLEN];
+    ngx_connection_t       *c;
+    ngx_pool_cleanup_t     *cln;
+    ngx_http_google_proxy_resolver_ctx_t  *ctx;
+
+    cln = ngx_pool_cleanup_add(r->pool, sizeof(ngx_http_google_proxy_resolver_ctx_t));
+    if (cln == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    ctx = cln->data;
+    ngx_http_set_ctx(r, ctx, ngx_http_google_proxy_resolver_module);
+
+    c = r->connection;
+
+#if nginx_version < 1005003
+    len = ngx_sock_ntop(addr->sockaddr, text, NGX_SOCKADDR_STRLEN, 0);
+#else
+    len = ngx_sock_ntop(addr->sockaddr, addr->socklen, text, NGX_SOCKADDR_STRLEN, 0);
+#endif
+
+    if (len == 0) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    p = ngx_pnalloc(c->pool, len);
+    if (p == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    ngx_memcpy(p, text, len);
+
+    cln->handler = ngx_http_google_proxy_resolver_cleanup;
+
+    ctx->connection = c;
+    ctx->sockaddr = c->sockaddr;
+    ctx->socklen = c->socklen;
+    ctx->addr_text = c->addr_text;
+
+    c->sockaddr = addr->sockaddr;
+    c->socklen = addr->socklen;
+    c->addr_text.len = len;
+    c->addr_text.data = p;
+
+    return NGX_DECLINED;
+}
+
+
+void
+ngx_http_google_proxy_resolver_cleanup(void *data)
+{
+    ngx_http_google_proxy_resolver_ctx_t *ctx = data;
+
+    ngx_connection_t  *c;
+
+    c = ctx->connection;
+
+    c->sockaddr = ctx->sockaddr;
+    c->socklen = ctx->socklen;
+    c->addr_text = ctx->addr_text;
 }
