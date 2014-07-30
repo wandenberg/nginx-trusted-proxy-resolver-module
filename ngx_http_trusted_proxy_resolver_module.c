@@ -13,7 +13,6 @@ ngx_int_t    ngx_http_trusted_proxy_resolver_realip_variable(ngx_http_request_t 
 ngx_int_t    ngx_http_trusted_proxy_resolver_handler(ngx_http_request_t *r);
 ngx_flag_t   ngx_http_trusted_proxy_resolver_is_accessing_through_google_proxy(ngx_http_request_t *r);
 ngx_str_t   *ngx_http_trusted_proxy_resolver_create_str(ngx_pool_t *pool, uint len);
-ngx_str_t   *ngx_http_trusted_proxy_resolver_get_header(ngx_http_request_t *r, const ngx_str_t *header_name);
 ngx_str_t   *ngx_http_trusted_proxy_resolver_get_hostname(struct sockaddr *addr, ngx_pool_t *pool);
 ngx_str_t   *ngx_http_trusted_proxy_resolver_get_host_ip(ngx_str_t *hostname, struct sockaddr *addr, ngx_pool_t *pool);
 void         ngx_http_trusted_proxy_resolver_get_last_x_forwarded_for_valid_ip(ngx_http_request_t *r, ngx_str_t *ip);
@@ -281,42 +280,6 @@ ngx_http_trusted_proxy_resolver_create_str(ngx_pool_t *pool, uint len)
         aux->data = (u_char *) (aux + 1);
         aux->len = len;
         ngx_memset(aux->data, '\0', len + 1);
-    }
-
-    return aux;
-}
-
-
-ngx_str_t *
-ngx_http_trusted_proxy_resolver_get_header(ngx_http_request_t *r, const ngx_str_t *header_name)
-{
-    ngx_table_elt_t             *h;
-    ngx_list_part_t             *part;
-    ngx_uint_t                   i;
-    ngx_str_t                   *aux = NULL;
-
-    part = &r->headers_in.headers.part;
-    h = part->elts;
-
-    for (i = 0; /* void */; i++) {
-
-        if (i >= part->nelts) {
-            if (part->next == NULL) {
-                break;
-            }
-
-            part = part->next;
-            h = part->elts;
-            i = 0;
-        }
-
-        if ((h[i].key.len == header_name->len) && (ngx_strncasecmp(h[i].key.data, header_name->data, header_name->len) == 0)) {
-            if ((aux = (ngx_str_t *) ngx_pcalloc(r->pool, sizeof(ngx_str_t))) != NULL) {
-                aux->len = h[i].value.len;
-                aux->data = h[i].value.data;
-            }
-            break;
-        }
     }
 
     return aux;
