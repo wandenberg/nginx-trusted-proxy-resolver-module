@@ -21,8 +21,6 @@ ngx_int_t    ngx_http_trusted_proxy_resolver_set_addr(ngx_http_request_t *r, ngx
 void         ngx_http_trusted_proxy_resolver_cleanup(void *data);
 
 
-const ngx_str_t  HEADER_VIA = ngx_string("Via");
-const ngx_str_t  GOOGLE_COMPRESSION_PROXY = ngx_string("Chrome Compression Proxy");
 const ngx_str_t  GOOGLE_PROXY_DOMAIN_PATTERN = ngx_string("^google-proxy-[0-9\\-]*\\.google\\.com$");
 
 ngx_regex_t *google_proxy_domain_regexp = NULL;
@@ -258,17 +256,13 @@ ngx_http_trusted_proxy_resolver_handler(ngx_http_request_t *r)
 ngx_flag_t
 ngx_http_trusted_proxy_resolver_is_accessing_through_google_proxy(ngx_http_request_t *r)
 {
-    ngx_str_t          *via_header, *hostname, *ip;
+    ngx_str_t          *hostname, *ip;
 
-    if ((via_header = ngx_http_trusted_proxy_resolver_get_header(r, &HEADER_VIA)) != NULL) {
-        if (ngx_strlcasestrn(via_header->data, via_header->data + via_header->len, GOOGLE_COMPRESSION_PROXY.data, GOOGLE_COMPRESSION_PROXY.len - 1) != NULL) {
-            if ((hostname = ngx_http_trusted_proxy_resolver_get_hostname(r->connection->sockaddr, r->pool)) != NULL) {
-                if (ngx_regex_exec(google_proxy_domain_regexp, hostname, NULL, 0) != NGX_REGEX_NO_MATCHED) {
-                    if ((ip = ngx_http_trusted_proxy_resolver_get_host_ip(hostname, r->connection->sockaddr, r->pool)) != NULL) {
-                        if (ngx_strncmp(ip->data, r->connection->addr_text.data, r->connection->addr_text.len) == 0) {
-                            return 1;
-                        }
-                    }
+    if ((hostname = ngx_http_trusted_proxy_resolver_get_hostname(r->connection->sockaddr, r->pool)) != NULL) {
+        if (ngx_regex_exec(google_proxy_domain_regexp, hostname, NULL, 0) != NGX_REGEX_NO_MATCHED) {
+            if ((ip = ngx_http_trusted_proxy_resolver_get_host_ip(hostname, r->connection->sockaddr, r->pool)) != NULL) {
+                if (ngx_strncmp(ip->data, r->connection->addr_text.data, r->connection->addr_text.len) == 0) {
+                    return 1;
                 }
             }
         }
