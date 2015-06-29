@@ -222,11 +222,7 @@ ngx_http_trusted_proxy_resolver_realip_variable(ngx_http_request_t *r, ngx_http_
         }
     }
 
-#if nginx_version < 1003014
-    if (gprlc->enabled && (r->headers_in.x_forwarded_for != NULL) && ngx_http_trusted_proxy_resolver_is_accessing_through_google_proxy(r)) {
-#else
     if (gprlc->enabled && (r->headers_in.x_forwarded_for.elts != NULL) && ngx_http_trusted_proxy_resolver_is_accessing_through_google_proxy(r)) {
-#endif
         ngx_http_trusted_proxy_resolver_get_last_x_forwarded_for_valid_ip(r, &ip);
 
         if (ip.len == 0) {
@@ -256,11 +252,7 @@ ngx_http_trusted_proxy_resolver_handler(ngx_http_request_t *r)
         return NGX_DECLINED;
     }
 
-#if nginx_version < 1003014
-    if ((r->headers_in.x_forwarded_for != NULL) && ngx_http_trusted_proxy_resolver_is_accessing_through_google_proxy(r)) {
-#else
     if ((r->headers_in.x_forwarded_for.elts != NULL) && ngx_http_trusted_proxy_resolver_is_accessing_through_google_proxy(r)) {
-#endif
 
         ngx_http_trusted_proxy_resolver_get_last_x_forwarded_for_valid_ip(r, &ip);
 
@@ -368,14 +360,9 @@ ngx_http_trusted_proxy_resolver_get_last_x_forwarded_for_valid_ip(ngx_http_reque
     u_char           *p, *xff;
     size_t            xfflen;
 
-#if nginx_version < 1003014
-    xff = r->headers_in.x_forwarded_for->value.data;
-    xfflen = r->headers_in.x_forwarded_for->value.len;
-#else
     ngx_table_elt_t  **h = r->headers_in.x_forwarded_for.elts;
     xff = h[r->headers_in.x_forwarded_for.nelts - 1]->value.data;
     xfflen = h[r->headers_in.x_forwarded_for.nelts - 1]->value.len;
-#endif
 
     for (p = xff + xfflen - 1; p > xff; p--, xfflen--) {
         if (*p != ' ' && *p != ',') {
@@ -415,11 +402,7 @@ ngx_http_trusted_proxy_resolver_set_addr(ngx_http_request_t *r, ngx_addr_t *addr
 
     c = r->connection;
 
-#if nginx_version < 1005003
-    len = ngx_sock_ntop(addr->sockaddr, text, NGX_SOCKADDR_STRLEN, 0);
-#else
     len = ngx_sock_ntop(addr->sockaddr, addr->socklen, text, NGX_SOCKADDR_STRLEN, 0);
-#endif
 
     if (len == 0) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
