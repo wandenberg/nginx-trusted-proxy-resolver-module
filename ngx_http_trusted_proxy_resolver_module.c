@@ -26,6 +26,7 @@ ngx_regex_t *google_proxy_domain_regexp = NULL;
 
 typedef struct {
     ngx_flag_t                enabled;
+    ngx_http_complex_value_t *address;
 } ngx_http_trusted_proxy_resolver_loc_conf_t;
 
 typedef struct {
@@ -53,6 +54,12 @@ static ngx_command_t ngx_http_trusted_proxy_resolver_commands[] = {
       offsetof(ngx_http_trusted_proxy_resolver_loc_conf_t, enabled),
       NULL },
 
+    { ngx_string("trusted_proxy_resolver_address"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_TAKE1,
+      ngx_http_set_complex_value_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_trusted_proxy_resolver_loc_conf_t, address),
+      NULL },
     ngx_null_command
 };
 
@@ -144,6 +151,7 @@ ngx_http_trusted_proxy_resolver_create_loc_conf(ngx_conf_t *cf)
     }
 
     conf->enabled = NGX_CONF_UNSET;
+    conf->address = NULL;
 
     return conf;
 }
@@ -156,6 +164,10 @@ ngx_http_trusted_proxy_resolver_merge_loc_conf(ngx_conf_t *cf, void *parent, voi
     ngx_http_trusted_proxy_resolver_loc_conf_t  *conf = child;
 
     ngx_conf_merge_value(conf->enabled, prev->enabled, 0);
+
+    if (conf->address == NULL) {
+        conf->address = prev->address;
+    }
 
     return NGX_CONF_OK;
 }
@@ -191,16 +203,29 @@ ngx_http_trusted_proxy_resolver_init_worker(ngx_cycle_t *cycle)
 ngx_int_t
 ngx_http_trusted_proxy_resolver_realip_variable(ngx_http_request_t *r, ngx_http_variable_value_t *var, uintptr_t data)
 {
-    ngx_str_t          ip = ngx_null_string;
+    ngx_http_trusted_proxy_resolver_loc_conf_t  *gprlc = ngx_http_get_module_loc_conf(r, ngx_http_trusted_proxy_resolver_module);
+    ngx_str_t                                    ip = ngx_null_string;
+    ngx_str_t                                    vv_address = ngx_null_string;
+    ngx_addr_t                                   address;
+    ngx_str_t                                   *addr_text = &r->connection->addr_text;
 
     if (var->len > 0) {
         return NGX_OK;
     }
 
+    if (gprlc->address) {
+        ngx_http_complex_value(r, gprlc->address, &vv_address);
+        if (vv_address.len > 0) {
+            if (ngx_parse_addr(r->pool, &address, vv_address.data, vv_address.len) == NGX_OK) {
+                addr_text = &vv_address;
+            }
+        }
+    }
+
 #if nginx_version < 1003014
-    if ((r->headers_in.x_forwarded_for != NULL) && ngx_http_trusted_proxy_resolver_is_accessing_through_google_proxy(r)) {
+    if (gprlc->enabled && (r->headers_in.x_forwarded_for != NULL) && ngx_http_trusted_proxy_resolver_is_accessing_through_google_proxy(r)) {
 #else
-    if ((r->headers_in.x_forwarded_for.elts != NULL) && ngx_http_trusted_proxy_resolver_is_accessing_through_google_proxy(r)) {
+    if (gprlc->enabled && (r->headers_in.x_forwarded_for.elts != NULL) && ngx_http_trusted_proxy_resolver_is_accessing_through_google_proxy(r)) {
 #endif
         ngx_http_trusted_proxy_resolver_get_last_x_forwarded_for_valid_ip(r, &ip);
 
@@ -211,8 +236,8 @@ ngx_http_trusted_proxy_resolver_realip_variable(ngx_http_request_t *r, ngx_http_
         var->len = ip.len;
         var->data = ip.data;
     } else {
-        var->len = r->connection->addr_text.len;
-        var->data = r->connection->addr_text.data;
+        var->len = addr_text->len;
+        var->data = addr_text->data;
     }
 
     return NGX_OK;
@@ -255,12 +280,27 @@ ngx_http_trusted_proxy_resolver_handler(ngx_http_request_t *r)
 ngx_flag_t
 ngx_http_trusted_proxy_resolver_is_accessing_through_google_proxy(ngx_http_request_t *r)
 {
-    ngx_str_t          *hostname, *ip;
+    ngx_http_trusted_proxy_resolver_loc_conf_t  *gprlc = ngx_http_get_module_loc_conf(r, ngx_http_trusted_proxy_resolver_module);
+    ngx_str_t                                   *hostname, *ip;
+    ngx_str_t                                    vv_address = ngx_null_string;
+    struct sockaddr                             *sockaddr = r->connection->sockaddr;
+    ngx_addr_t                                   address;
+    ngx_str_t                                   *addr_text = &r->connection->addr_text;
 
-    if ((hostname = ngx_http_trusted_proxy_resolver_get_hostname(r->connection->sockaddr, r->pool)) != NULL) {
+    if (gprlc->address) {
+        ngx_http_complex_value(r, gprlc->address, &vv_address);
+        if (vv_address.len > 0) {
+            if (ngx_parse_addr(r->pool, &address, vv_address.data, vv_address.len) == NGX_OK) {
+                sockaddr = address.sockaddr;
+                addr_text = &vv_address;
+            }
+        }
+    }
+
+    if ((hostname = ngx_http_trusted_proxy_resolver_get_hostname(sockaddr, r->pool)) != NULL) {
         if (ngx_regex_exec(google_proxy_domain_regexp, hostname, NULL, 0) != NGX_REGEX_NO_MATCHED) {
-            if ((ip = ngx_http_trusted_proxy_resolver_get_host_ip(hostname, r->connection->sockaddr, r->pool)) != NULL) {
-                if (ngx_strncmp(ip->data, r->connection->addr_text.data, r->connection->addr_text.len) == 0) {
+            if ((ip = ngx_http_trusted_proxy_resolver_get_host_ip(hostname, sockaddr, r->pool)) != NULL) {
+                if (ngx_strncmp(ip->data, addr_text->data, addr_text->len) == 0) {
                     return 1;
                 }
             }
