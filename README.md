@@ -84,6 +84,20 @@ $ make
 $ make install
 ```
 
+Building dynamically
+-------------------------
+
+[Download Nginx Stable](http://nginx.org/en/download.html) source and uncompress it (ex.: to ../nginx). You must then run ./configure with --with-compat and --add-dynamic-module pointing to this project as usual. Something in the lines of:
+
+```bash
+$ ./configure \
+    --with-compat \
+    --add-dynamic-module=../nginx-trusted-proxy-resolver-module
+$ make modules
+```
+
+Then the file `ngx_http_trusted_proxy_resolver_module.so` will be generated at the `objs` folder inside your nginx source files
+
 Running tests
 -------------
 
